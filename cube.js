@@ -31,18 +31,17 @@ export function createRubiksCube(scene) {
   const stickerMat = (hex) =>
     new THREE.MeshBasicMaterial({
       color: hex,
-      polygonOffset: true,          // prevent z-fighting with the base cube
+      polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1
     });
 
   // Cubies + stickers
   const cubies = [];
-  const baseGeo = new THREE.BoxGeometry(CUBIE, CUBIE, CUBIE);
+  const baseGeo = new THREE.BoxGeometry(1, 1, 1);
   const STICKER_INSET = 0.05;
-  const STICKER_OFFSET = CUBIE / 2 + 0.001;
+  const STICKER_OFFSET = 0.5 + 0.001;
 
-  // Helper to add one sticker to a cubie (LOCAL space!)
   function addStickerLocal(parentMesh, faceId, normalVec3) {
     const isOuter =
       (faceId === 1 && parentMesh.userData.xi === SIZE - 1) ||
@@ -55,18 +54,16 @@ export function createRubiksCube(scene) {
     if (!isOuter) return;
 
     const planeGeo = new THREE.PlaneGeometry(
-      CUBIE - 2 * STICKER_INSET,
-      CUBIE - 2 * STICKER_INSET
+      1 - 2 * STICKER_INSET,
+      1 - 2 * STICKER_INSET
     );
     const plane = new THREE.Mesh(planeGeo, stickerMat(COLORS[faceId]));
 
-    // Position in the cubie's LOCAL space
     plane.position.set(
       normalVec3.x * STICKER_OFFSET,
       normalVec3.y * STICKER_OFFSET,
       normalVec3.z * STICKER_OFFSET
     );
-    // Orient to face outward (local)
     const look = normalVec3.clone().normalize();
     const target = plane.position.clone().add(look);
     plane.lookAt(target);
@@ -74,7 +71,6 @@ export function createRubiksCube(scene) {
     parentMesh.add(plane);
   }
 
-  // Build 27 cubies (keeping the center for simplicity)
   for (let xi = 0; xi < SIZE; xi++) {
     for (let yi = 0; yi < SIZE; yi++) {
       for (let zi = 0; zi < SIZE; zi++) {
@@ -87,28 +83,21 @@ export function createRubiksCube(scene) {
         const pz = (zi - HALF) * STEP;
         m.position.set(px, py, pz);
 
-        // Save logical indices and original position for "Solve"
-        m.userData = {
-          xi, yi, zi,
-          origin: new THREE.Vector3(px, py, pz)
-        };
+        m.userData = { xi, yi, zi, origin: new THREE.Vector3(px, py, pz) };
 
         group.add(m);
         cubies.push(m);
 
-        // Stickers in LOCAL space (no world-position math!)
-        addStickerLocal(m, 1, new THREE.Vector3( 1, 0, 0)); // +X
-        addStickerLocal(m, 2, new THREE.Vector3(-1, 0, 0)); // -X
-        addStickerLocal(m, 3, new THREE.Vector3( 0, 1, 0)); // +Y
-        addStickerLocal(m, 4, new THREE.Vector3( 0,-1, 0)); // -Y
-        addStickerLocal(m, 5, new THREE.Vector3( 0, 0, 1)); // +Z
-        addStickerLocal(m, 6, new THREE.Vector3( 0, 0,-1)); // -Z
+        addStickerLocal(m, 1, new THREE.Vector3( 1, 0, 0));
+        addStickerLocal(m, 2, new THREE.Vector3(-1, 0, 0));
+        addStickerLocal(m, 3, new THREE.Vector3( 0, 1, 0));
+        addStickerLocal(m, 4, new THREE.Vector3( 0,-1, 0));
+        addStickerLocal(m, 5, new THREE.Vector3( 0, 0, 1));
+        addStickerLocal(m, 6, new THREE.Vector3( 0, 0,-1));
       }
     }
   }
 
-  // ---- Slice selection on snapped local positions ----
-  // After each turn we snap positions to the exact grid, so we can select by equality with tolerance.
   const TOL = 1e-4;
   const isAt = (val, target) => Math.abs(val - target) < TOL;
 
@@ -121,7 +110,6 @@ export function createRubiksCube(scene) {
     6: (m) => isAt(m.position.z, -EDGE),
   };
 
-  // ---- Rotation axes in GLOBAL coordinates ----
   const faceAxis = {
     1: new THREE.Vector3( 1, 0, 0),
     2: new THREE.Vector3(-1, 0, 0),
@@ -131,55 +119,35 @@ export function createRubiksCube(scene) {
     6: new THREE.Vector3( 0, 0,-1),
   };
 
-  // ---- Snapping helpers (positions & rotations) ----
-
-  // Round a number to the nearest of [-EDGE, 0, +EDGE]
   function snapCoord(v) {
-    if (v >  (+EDGE + 0) / 2) return +EDGE;
-    if (v <  (-EDGE - 0) / 2) return -EDGE;
-    return 0;
+    const candidates = [-EDGE, 0, EDGE];
+    let best = candidates[0], bestd = Infinity;
+    for (const c of candidates) {
+      const d = Math.abs(v - c);
+      if (d < bestd) { bestd = d; best = c; }
+    }
+    return best;
   }
 
-  // Snap an object's rotation matrix to the nearest 90° orthonormal basis.
   function snapRotation(obj) {
-    // Extract the object's rotation matrix in world, convert to local since parent is axis-aligned.
-    const m = obj.matrix.clone();
-    m.extractRotation(obj.matrix);
-
-    // Take basis vectors and round each component to {-1,0,1} then re-orthonormalize.
     const x = new THREE.Vector3().setFromMatrixColumn(obj.matrix, 0);
     const y = new THREE.Vector3().setFromMatrixColumn(obj.matrix, 1);
     const z = new THREE.Vector3().setFromMatrixColumn(obj.matrix, 2);
-
     const roundAxis = (v) => {
-      const r = new THREE.Vector3(
-        Math.round(v.x),
-        Math.round(v.y),
-        Math.round(v.z)
-      );
-      // If vector rounded to zero length (rare), fallback to original axis rounded by sign
+      const r = new THREE.Vector3(Math.round(v.x), Math.round(v.y), Math.round(v.z));
       if (r.lengthSq() === 0) {
         r.set(Math.sign(v.x), Math.sign(v.y), Math.sign(v.z));
       }
       return r.normalize();
     };
-
     const xr = roundAxis(x);
-    // Make y orthogonal to xr but close to original y
-    let yr = roundAxis(y);
-    // If not orthogonal, recompute via z and x
     const zr = roundAxis(z);
-    // Ensure right-handed orthonormal basis
-    // Compute yr as zr x xr to guarantee orthogonality/right-handedness
-    yr = new THREE.Vector3().crossVectors(zr, xr).normalize();
-
-    // Rebuild rotation matrix
+    const yr = new THREE.Vector3().crossVectors(zr, xr).normalize();
     const R = new THREE.Matrix4().makeBasis(xr, yr, zr);
     const q = new THREE.Quaternion().setFromRotationMatrix(R);
     obj.quaternion.copy(q);
   }
 
-  // Snap cubie to exact grid after a turn
   function snapCubie(c) {
     c.position.set(
       snapCoord(c.position.x),
@@ -190,20 +158,15 @@ export function createRubiksCube(scene) {
     c.updateMatrix();
   }
 
-  // ---- Face rotation (single entry point) ----
   let animating = false;
 
   function rotateFace(faceId, dir, animate = true) {
     if (animating) return Promise.resolve();
 
-    // Select the slice using current (already snapped) local coordinates
     const slice = cubies.filter(matchers[faceId]);
 
-    // Create a temporary pivot at the origin; rotate in world axes.
     const pivot = new THREE.Group();
     group.add(pivot);
-
-    // Attach slice to pivot (preserves world transforms)
     slice.forEach((m) => pivot.attach(m));
 
     const axis = faceAxis[faceId].clone().normalize();
@@ -221,11 +184,7 @@ export function createRubiksCube(scene) {
         if (k < 1) {
           requestAnimationFrame(tick);
         } else {
-          // Bake transform back to main group and SNAP every moved cubie
-          slice.forEach((m) => {
-            group.attach(m);
-            snapCubie(m);
-          });
+          slice.forEach((m) => { group.attach(m); snapCubie(m); });
           group.remove(pivot);
           animating = false;
           resolve();
@@ -235,13 +194,13 @@ export function createRubiksCube(scene) {
     });
   }
 
-  // ---- Public helpers ----
-
   function resetSolved() {
-    cubies.forEach((m) => {
-      m.position.copy(m.userData.origin);
-      m.quaternion.identity();
-      m.updateMatrix();
+    group.children.forEach((m) => {
+      if (m.isMesh) {
+        m.position.copy(m.userData.origin);
+        m.quaternion.identity();
+        m.updateMatrix();
+      }
     });
   }
 
@@ -258,8 +217,5 @@ export function createRubiksCube(scene) {
     }
   }
 
-  return {
-    group,
-    api: { rotateFace, resetSolved, randomTurn, shuffle, faceAxis }
-  };
+  return { group, api: { rotateFace, resetSolved, randomTurn, shuffle, faceAxis } };
 }
