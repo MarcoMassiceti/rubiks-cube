@@ -1,55 +1,39 @@
-const CACHE_NAME = 'rubik-pwa-v6-2025-10-21-v9';
-const ASSETS = [
-  './',
-  './index.html?v=9',
-  './style.css?v=9',
-  './app.js?v=9',
-  './cube.js?v=9',
-  './manifest.webmanifest?v=9',
-  './icon-192.png',
-  './icon-512.png',
-  'https://unpkg.com/three@0.160.0/build/three.min.js'
-];
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rubik's Cube PWA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- iOS PWA friendliness -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Rubik PWA">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <!-- PWA manifest -->
+  <link rel="manifest" href="manifest.webmanifest?v=10">
+  <link rel="stylesheet" href="style.css?v=10">
+  <!-- Three.js (CDN) -->
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="scene"></div>
 
-self.addEventListener('install', (e) => {
-  self.skipWaiting();
-  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)));
-});
+    <div id="hud">
+      <div id="controls">
+        <button id="shuffleBtn" type="button">Shuffle</button>
+        <button id="solveBtn" type="button">Solve</button>
+        <label class="small">
+          Moves:
+          <input id="shuffleCount" type="number" min="1" max="200" value="25">
+        </label>
+      </div>
+      <!-- The "globe" trackball area for 1-finger camera rotation -->
+      <div id="globe" aria-label="Drag here to rotate cube (camera)"></div>
+    </div>
+  </div>
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    (async () => {
-      const keys = await caches.keys();
-      await Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)));
-      await self.clients.claim();
-    })()
-  );
-});
-
-self.addEventListener('fetch', (e) => {
-  const url = new URL(e.request.url);
-
-  if (url.searchParams.get('dev') === '1') {
-    e.respondWith(fetch(e.request, { cache: 'reload' }).catch(() => caches.match(e.request)));
-    return;
-  }
-
-  const hasVersion = url.searchParams.has('v');
-
-  e.respondWith(
-    (async () => {
-      try {
-        const net = await fetch(e.request, { cache: hasVersion ? 'reload' : 'no-store' });
-        if (e.request.method === 'GET') {
-          const cache = await caches.open(CACHE_NAME);
-          cache.put(e.request, net.clone());
-        }
-        return net;
-      } catch {
-        const cached = await caches.match(e.request);
-        if (cached) return cached;
-        return caches.match('./');
-      }
-    })()
-  );
-});
+  <!-- Load ONLY app.js; it imports cube.js -->
+  <script type="module" src="app.js?v=10"></script>
+</body>
+</html>
