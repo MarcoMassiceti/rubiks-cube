@@ -9,9 +9,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Rubik PWA">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <!-- PWA manifest -->
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css">
+  <!-- PWA manifest (bump ?v= number to bust cache) -->
+  <link rel="manifest" href="manifest.webmanifest?v=6">
+  <!-- Versioned CSS (bump ?v=) -->
+  <link rel="stylesheet" href="style.css?v=6">
   <!-- Three.js (CDN) -->
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
 </head>
@@ -28,12 +29,12 @@
           <input id="shuffleCount" type="number" min="1" max="200" value="25">
         </label>
       </div>
-      <!-- The "globe" trackball area for 1-finger camera rotation -->
       <div id="globe" aria-label="Drag here to rotate cube (camera)"></div>
     </div>
   </div>
 
-  <script type="module" src="cube.js"></script>
-  <script type="module" src="app.js"></script>
+  <!-- Versioned modules (bump ?v=) -->
+  <script type="module" src="cube.js?v=6"></script>
+  <script type="module" src="app.js?v=6"></script>
 </body>
 </html>
