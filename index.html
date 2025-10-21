@@ -4,14 +4,14 @@
   <meta charset="utf-8" />
   <title>Rubik's Cube PWA</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <!-- iOS PWA friendliness  -->
+  <!-- iOS PWA friendliness -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Rubik PWA">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <!-- PWA manifest (bump ?v= to bust cache) -->
-  <link rel="manifest" href="manifest.webmanifest?v=7">
-  <link rel="stylesheet" href="style.css?v=7">
+  <!-- PWA manifest -->
+  <link rel="manifest" href="manifest.webmanifest?v=8">
+  <link rel="stylesheet" href="style.css?v=8">
   <!-- Three.js (CDN) -->
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
 </head>
@@ -33,7 +33,7 @@
     </div>
   </div>
 
-  <!-- Load ONLY app.js; app.js will import cube.js (with same ?v=) -->
-  <script type="module" src="app.js?v=7"></script>
+  <!-- Load ONLY app.js; it imports cube.js -->
+  <script type="module" src="app.js?v=8"></script>
 </body>
 </html>
