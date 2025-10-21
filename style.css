@@ -2,7 +2,7 @@
 html, body, #app { height: 100%; margin: 0; background: #111; color: #eee; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
 
 #scene { position: fixed; inset: 0; }
-/* Let us fully handle touch gestures (pinch, etc.) on the WebGL canvas */
+/* Important for iOS: let us fully handle gestures on the WebGL canvas */
 #scene canvas { touch-action: none; }
 
 #hud { position: fixed; inset: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); pointer-events: none; }
@@ -17,6 +17,6 @@ html, body, #app { height: 100%; margin: 0; background: #111; color: #eee; font-
   background: radial-gradient(circle at 30% 30%, #1e1e1e, #0b0b0b);
   border: 1px solid #333;
   box-shadow: 0 8px 24px rgba(0,0,0,.5) inset, 0 0 8px rgba(255,255,255,.06);
-  pointer-events: auto; 
-  touch-action: none; /* we need full control over touch here as well */
+  pointer-events: auto;
+  touch-action: none; /* full control here too */
 }
