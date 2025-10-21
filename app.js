@@ -6,12 +6,42 @@ const shuffleBtn = document.getElementById('shuffleBtn');
 const solveBtn = document.getElementById('solveBtn');
 const shuffleCount = document.getElementById('shuffleCount');
 
+// ---------- DEV: cache-busting switch ----------
+// Visit your page with ?dev=1 once to fully bypass SW + clear caches during testing.
+// Example: https://<user>.github.io/<repo>/?dev=1
+(async function devBypass() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('dev') === '1') {
+    try {
+      // Unregister all service workers
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) await r.unregister();
+      }
+      // Clear all caches
+      if (window.caches && caches.keys) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      // Remove ?dev=1 and reload once
+      if (!sessionStorage.getItem('devReloaded')) {
+        sessionStorage.setItem('devReloaded', '1');
+        const url = new URL(location.href);
+        url.searchParams.delete('dev');
+        location.replace(url.toString());
+        return; // stop running rest of app.js on this pass
+      } else {
+        sessionStorage.removeItem('devReloaded');
+      }
+    } catch {}
+  }
+})();
+
 // === THREE scene ===
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
-// Start farther out; we will also auto-frame after the cube is built.
 camera.position.set(7.5, 7.5, 7.5);
 camera.lookAt(0,0,0);
 
@@ -30,49 +60,32 @@ scene.add(dir);
 
 // Cube
 const { group, api } = createRubiksCube(scene);
-
-// Subtle base rotation
 group.rotation.set(0.3, 0.6, 0);
 
 // -------- Camera framing & zoom helpers --------
-function frameObjectToView(object, margin = 1.6) {
-  // Compute bounding sphere of the object and set camera distance accordingly
+function frameObjectToView(object, margin = 1.8) {
   const box = new THREE.Box3().setFromObject(object);
   const sphere = box.getBoundingSphere(new THREE.Sphere());
-  // distance so that the object fits vertically in view, with some margin
   const fovRad = THREE.MathUtils.degToRad(camera.fov);
   const dist = (sphere.radius * margin) / Math.sin(fovRad / 2);
   setCameraDistance(dist);
 }
-
-function getCameraDistance() {
-  // Distance from camera to origin (we always look at 0,0,0)
-  return camera.position.length();
-}
-
+function getCameraDistance() { return camera.position.length(); }
 function setCameraDistance(d) {
-  const min = 3.0;      // clamp to avoid clipping in
-  const max = 40.0;     // clamp to avoid zooming too far
+  const min = 3.0, max = 40.0;
   const clamped = Math.max(min, Math.min(max, d));
   const dirVec = camera.position.clone().normalize();
   camera.position.copy(dirVec.multiplyScalar(clamped));
   camera.updateProjectionMatrix();
 }
-
 function dollyByScale(scale) {
-  // scale > 1 => zoom out; scale < 1 => zoom in
   const current = getCameraDistance();
   setCameraDistance(current * scale);
 }
-
-// Auto-frame once on load (after cube exists)
 frameObjectToView(group, 1.8);
 
 // Render loop
-function animate() {
-  renderer.render(scene, camera);
-  requestAnimationFrame(animate);
-}
+function animate() { renderer.render(scene, camera); requestAnimationFrame(animate); }
 animate();
 
 // Resize
@@ -80,71 +93,49 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  // keep object nicely framed when orientation changes
-  // (don’t snap brutally; just ensure we aren’t too close)
-  const minSuggested = 6.5;
-  if (getCameraDistance() < minSuggested) setCameraDistance(minSuggested);
+  if (getCameraDistance() < 6.5) setCameraDistance(6.5);
 }, { passive: true });
 
-// ========== Globe drag (1-finger) to rotate the cube in place ==========
+// ========== Globe drag (1-finger) ==========
 let globeDragging = false;
 let lastGlobe = null;
-
 const globeRect = () => globeEl.getBoundingClientRect();
-
-function onGlobeStart(clientX, clientY) {
-  globeDragging = true;
-  lastGlobe = { x: clientX, y: clientY };
-}
-function onGlobeMove(clientX, clientY) {
+function onGlobeStart(x, y) { globeDragging = true; lastGlobe = { x, y }; }
+function onGlobeMove(x, y) {
   if (!globeDragging || !lastGlobe) return;
-  const dx = clientX - lastGlobe.x;
-  const dy = clientY - lastGlobe.y;
+  const dx = x - lastGlobe.x, dy = y - lastGlobe.y;
   group.rotation.y += dx * 0.005;
   group.rotation.x += dy * 0.005;
-  lastGlobe = { x: clientX, y: clientY };
+  lastGlobe = { x, y };
 }
 function onGlobeEnd() { globeDragging = false; lastGlobe = null; }
 
-// Pointer wiring for globe
-globeEl.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  globeEl.setPointerCapture(e.pointerId);
-  onGlobeStart(e.clientX, e.clientY);
-});
-globeEl.addEventListener('pointermove', (e) => {
-  if (!globeDragging) return;
-  e.preventDefault();
-  onGlobeMove(e.clientX, e.clientY);
-});
-globeEl.addEventListener('pointerup', () => { onGlobeEnd(); });
-globeEl.addEventListener('pointercancel', () => { onGlobeEnd(); });
+globeEl.addEventListener('pointerdown', (e) => { e.preventDefault(); globeEl.setPointerCapture(e.pointerId); onGlobeStart(e.clientX, e.clientY); });
+globeEl.addEventListener('pointermove', (e) => { if (!globeDragging) return; e.preventDefault(); onGlobeMove(e.clientX, e.clientY); });
+globeEl.addEventListener('pointerup', () => onGlobeEnd());
+globeEl.addEventListener('pointercancel', () => onGlobeEnd());
 
-// ========== Turn swipe everywhere else (not on globe) ==========
+// ========== Turn swipe & pinch on canvas ==========
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let swipeState = null;
 
-// Keep track of active pointers to detect pinch
 const activePointers = new Map(); // id -> {x,y}
 let pinchActive = false;
 let pinchStartDistance = 0;
 
 function setPointerFromEvent(e) {
   const rect = renderer.domElement.getBoundingClientRect();
-  const x = ( (e.clientX - rect.left) / rect.width ) * 2 - 1;
-  const y = -( (e.clientY - rect.top) / rect.height ) * 2 + 1;
+  const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   pointer.set(x, y);
 }
-
 function worldPointOnHit(e) {
   setPointerFromEvent(e);
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(group.children, true);
-  if (hits.length) return hits[0];
-  return null;
+  return hits.length ? hits[0] : null;
 }
-
 function principalAxis(v) {
   const mags = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
   const i = mags.indexOf(Math.max(...mags));
@@ -152,7 +143,6 @@ function principalAxis(v) {
   if (i === 1) return new THREE.Vector3(0, Math.sign(v.y) || 1, 0);
   return new THREE.Vector3(0, 0, Math.sign(v.z) || 1);
 }
-
 function faceIdFromNormal(n) {
   const a = principalAxis(n);
   if (a.x > 0) return 1;
@@ -160,58 +150,32 @@ function faceIdFromNormal(n) {
   if (a.y > 0) return 3;
   if (a.y < 0) return 4;
   if (a.z > 0) return 5;
-  return 6; // a.z < 0
+  return 6;
 }
-
-// ---------- Pinch helpers ----------
-function screenDistance(p1, p2) {
-  const dx = p1.x - p2.x;
-  const dy = p1.y - p2.y;
-  return Math.hypot(dx, dy);
-}
-
+function screenDistance(p1, p2) { return Math.hypot(p1.x - p2.x, p1.y - p2.y); }
 function updatePinchState() {
   const points = Array.from(activePointers.values());
   if (points.length === 2) {
     const d = screenDistance(points[0], points[1]);
-    if (!pinchActive) {
-      pinchActive = true;
-      pinchStartDistance = d;
-    } else if (pinchStartDistance > 0) {
-      // scale factor: >1 = fingers moved apart => zoom out
-      const scale = pinchStartDistance > 0 ? (pinchStartDistance / d) : 1;
-      // invert so spreading fingers (d bigger) => scale < 1 => zoom in (more natural)
-      // We'll use the reciprocal to make spreading zoom OUT less aggressively.
+    if (!pinchActive) { pinchActive = true; pinchStartDistance = d; }
+    else if (pinchStartDistance > 0) {
       const adjusted = d / pinchStartDistance;
       dollyByScale(1 / adjusted);
-      pinchStartDistance = d; // incremental
+      pinchStartDistance = d;
     }
-  } else {
-    pinchActive = false;
-    pinchStartDistance = 0;
-  }
+  } else { pinchActive = false; pinchStartDistance = 0; }
 }
 
-// Canvas pointer listeners (handle pinch + turn-swipe)
 renderer.domElement.addEventListener('pointerdown', (e) => {
-  // track pointer for possible pinch
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size >= 2) { updatePinchState(); return; }
 
-  // if starting a pinch (now 2 pointers), don't start swipe
-  if (activePointers.size >= 2) {
-    updatePinchState();
-    return;
-  }
-
-  // ignore globe area for swipe
   const g = globeRect();
   if (e.clientX >= g.left && e.clientX <= g.right && e.clientY >= g.top && e.clientY <= g.bottom) return;
 
   const hit = worldPointOnHit(e);
   if (!hit) return;
   swipeState = {
-    startEvent: e,
-    startHit: hit,
     startPoint: hit.point.clone(),
     startNormal: hit.face?.normal.clone().transformDirection(hit.object.matrixWorld) || new THREE.Vector3(),
     lastPoint: hit.point.clone(),
@@ -220,21 +184,9 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 });
 
 renderer.domElement.addEventListener('pointermove', (e) => {
-  // update pointer positions
-  if (activePointers.has(e.pointerId)) {
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  }
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size >= 2) { e.preventDefault(); updatePinchState(); swipeState = null; return; }
 
-  // handle pinch first
-  if (activePointers.size >= 2) {
-    e.preventDefault();
-    updatePinchState();
-    // while pinching, cancel any swipe in progress
-    swipeState = null;
-    return;
-  }
-
-  // otherwise, standard swipe tracking
   if (!swipeState) return;
   const hit = worldPointOnHit(e);
   if (!hit) return;
@@ -243,27 +195,20 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 });
 
 renderer.domElement.addEventListener('pointerup', async (e) => {
-  // remove from active pointers
   activePointers.delete(e.pointerId);
-  updatePinchState(); // may end pinch
-
-  // If a pinch just ended or is active, don't interpret as a swipe
+  updatePinchState();
   if (pinchActive) return;
 
   if (!swipeState) return;
   const { startPoint, lastPoint, startNormal } = swipeState;
   swipeState = null;
-
   if (!startPoint || !lastPoint) return;
 
   const drag = lastPoint.clone().sub(startPoint);
-  const dragLen = drag.length();
-  const MIN = 0.15;
-  if (dragLen < MIN) return;
+  if (drag.length() < 0.15) return;
 
   const n = startNormal.clone().normalize();
   const tangential = drag.clone().sub(n.clone().multiplyScalar(drag.dot(n)));
-
   const axis = principalAxis(tangential);
   const cross = new THREE.Vector3().crossVectors(axis, n).normalize();
   const faceId = faceIdFromNormal(cross);
@@ -281,31 +226,20 @@ renderer.domElement.addEventListener('pointercancel', (e) => {
   swipeState = null;
 });
 
-// Optional: mouse wheel zoom for desktop (ignored on iPhone)
+// Optional: mouse wheel zoom for desktop
 renderer.domElement.addEventListener('wheel', (e) => {
   e.preventDefault();
   const delta = Math.sign(e.deltaY);
-  // delta > 0 => scroll down => zoom out slightly
   const step = 1 + (0.08 * Math.abs(delta));
   dollyByScale(delta > 0 ? step : 1 / step);
 }, { passive: false });
 
-// === Buttons ===
-shuffleBtn.addEventListener('click', async () => {
-  const n = Math.max(1, Math.min(200, Number(shuffleCount.value) || 25));
-  shuffleBtn.disabled = solveBtn.disabled = true;
-  await api.shuffle(n);
-  shuffleBtn.disabled = solveBtn.disabled = false;
-});
-
-solveBtn.addEventListener('click', async () => {
-  await api.rotateFace(1, 'CW', false); // flush anim queue
-  api.resetSolved();
-});
-
 // === PWA service worker ===
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+    // Only register SW if not in dev-bypass mode
+    const params = new URLSearchParams(location.search);
+    if (params.get('dev') === '1') return;
+    navigator.serviceWorker.register('./sw.js?v=6').catch(() => {});
   });
 }
