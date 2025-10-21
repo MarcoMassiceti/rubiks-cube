@@ -78,6 +78,8 @@ export function createRubiksCube(scene) {
           blackMat, blackMat, blackMat, blackMat, blackMat, blackMat
         ]);
 
+        const STEP = CUBIE + GAP;
+        const HALF = (SIZE - 1) / 2;
         const px = (xi - HALF) * STEP;
         const py = (yi - HALF) * STEP;
         const pz = (zi - HALF) * STEP;
