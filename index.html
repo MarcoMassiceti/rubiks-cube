@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Rubik's Cube PWA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- iOS PWA friendliness -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Rubik PWA">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <!-- PWA manifest -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <!-- Three.js (CDN) -->
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="scene"></div>
+
+    <div id="hud">
+      <div id="controls">
+        <button id="shuffleBtn" type="button">Shuffle</button>
+        <button id="solveBtn" type="button">Solve</button>
+        <label class="small">
+          Moves:
+          <input id="shuffleCount" type="number" min="1" max="200" value="25">
+        </label>
+      </div>
+      <!-- The "globe" trackball area for 1-finger camera rotation -->
+      <div id="globe" aria-label="Drag here to rotate cube (camera)"></div>
+    </div>
+  </div>
+
+  <script type="module" src="cube.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
