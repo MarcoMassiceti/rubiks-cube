@@ -1,11 +1,11 @@
-const CACHE_NAME = 'rubik-pwa-v6-2025-10-21-v9';
+const CACHE_NAME = 'rubik-pwa-v7-2025-10-21-v10';
 const ASSETS = [
   './',
-  './index.html?v=9',
-  './style.css?v=9',
-  './app.js?v=9',
-  './cube.js?v=9',
-  './manifest.webmanifest?v=9',
+  './index.html?v=10',
+  './style.css?v=10',
+  './app.js?v=10',
+  './cube.js?v=10',
+  './manifest.webmanifest?v=10',
   './icon-192.png',
   './icon-512.png',
   'https://unpkg.com/three@0.160.0/build/three.min.js'
