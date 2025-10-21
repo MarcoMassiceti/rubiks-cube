@@ -1,4 +1,4 @@
-import { createRubiksCube } from './cube.js?v=9';
+import { createRubiksCube } from './cube.js?v=10';
 
 const sceneEl = document.getElementById('scene');
 const globeEl = document.getElementById('globe');
@@ -110,7 +110,7 @@ globeEl.addEventListener('pointermove', (e) => { if (!globeDragging) return; e.p
 globeEl.addEventListener('pointerup', () => onGlobeEnd());
 globeEl.addEventListener('pointercancel', () => onGlobeEnd());
 
-// ========== Adjacent-edge swipe logic (camera/cube invariant) ==========
+// ========== Edge-strip swipe logic using 3-cubie validation ==========
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 
@@ -118,7 +118,65 @@ const activePointers = new Map(); // id -> {x,y}
 let pinchActive = false;
 let pinchStartDistance = 0;
 
-// Derive STEP and EDGE from the cube (so we can compute indices robustly)
+// World axes of the cube group (update as needed)
+function cubeWorldAxes() {
+  return {
+    ex: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 0).normalize(), // +X
+    ey: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 1).normalize(), // +Y
+    ez: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 2).normalize(), // +Z
+  };
+}
+
+// Toggle this if positive edge motion feels inverted globally
+const CW_IF_POSITIVE_ALONG_EDGE = true;
+
+function setPointerFromEvent(e) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  pointer.set(x, y);
+}
+function rayHit(e) {
+  setPointerFromEvent(e);
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(group.children, true);
+  return hits.length ? hits[0] : null;
+}
+
+function faceIdFromNormal(n) {
+  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+  if (ax >= ay && ax >= az) return n.x >= 0 ? 1 : 2;
+  if (ay >= ax && ay >= az) return n.y >= 0 ? 3 : 4;
+  return n.z >= 0 ? 5 : 6;
+}
+function faceNormalFromId(fid) {
+  const { ex, ey, ez } = cubeWorldAxes();
+  switch (fid) {
+    case 1: return ex.clone();
+    case 2: return ex.clone().multiplyScalar(-1);
+    case 3: return ey.clone();
+    case 4: return ey.clone().multiplyScalar(-1);
+    case 5: return ez.clone();
+    case 6: return ez.clone().multiplyScalar(-1);
+    default: return new THREE.Vector3(0,0,1);
+  }
+}
+
+// Determine which top-level cubie mesh was hit (stickers are children)
+function topCubie(mesh) {
+  let m = mesh;
+  while (m && m.parent !== group) m = m.parent;
+  return (m && m.parent === group) ? m : null;
+}
+
+// Convert a local coordinate to 0|1|2 index (strict)
+function idxFromCoord(coord, step) {
+  if (coord >  0.5*step) return 2;
+  if (coord < -0.5*step) return 0;
+  return 1;
+}
+
+// We discover STEP/EDGE from the model so this stays robust
 let STEP = 0, EDGE = 0;
 (function computeStepEdge() {
   const xs = new Set(), ys = new Set(), zs = new Set();
@@ -135,98 +193,7 @@ let STEP = 0, EDGE = 0;
   EDGE = Math.max(Math.max(...ax.map(Math.abs)), Math.max(...ay.map(Math.abs)), Math.max(...az.map(Math.abs)));
 })();
 
-function setPointerFromEvent(e) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-  pointer.set(x, y);
-}
-function worldRaycastHit(e) {
-  setPointerFromEvent(e);
-  raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObjects(group.children, true);
-  return hits.length ? hits[0] : null;
-}
-
-// Map world normal to faceId 1..6 consistently
-function faceIdFromNormal(n) {
-  const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-  if (ax >= ay && ax >= az) return n.x >= 0 ? 1 : 2;
-  if (ay >= ax && ay >= az) return n.y >= 0 ? 3 : 4;
-  return n.z >= 0 ? 5 : 6;
-}
-// Map faceId back to world unit normal using cube's world axes (in case needed)
-function faceNormalFromId(fid) {
-  // cube local axes in world:
-  const ex = new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 0).normalize(); // +X
-  const ey = new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 1).normalize(); // +Y
-  const ez = new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 2).normalize(); // +Z
-  switch (fid) {
-    case 1: return ex.clone();
-    case 2: return ex.clone().multiplyScalar(-1);
-    case 3: return ey.clone();
-    case 4: return ey.clone().multiplyScalar(-1);
-    case 5: return ez.clone();
-    case 6: return ez.clone().multiplyScalar(-1);
-  }
-  return new THREE.Vector3(0,0,1);
-}
-
-// Helpers to pick the nearest border (edge) on the touched face
-function nearestEdgeOnFace(touchFaceId, localPoint) {
-  // Determine which two local axes lie in the touched face
-  // and which coordinate hits which border (±EDGE).
-  // For touched face:
-  // ±X face => plane axes: Y,Z; borders at y=±EDGE or z=±EDGE
-  // ±Y face => plane axes: X,Z; borders at x=±EDGE or z=±EDGE
-  // ±Z face => plane axes: X,Y; borders at x=±EDGE or y=±EDGE
-
-  const cand = [];
-  const push = (adjAxis, sign, dist) => cand.push({ adjAxis, sign, dist }); // adjAxis: 'X'|'Y'|'Z', sign: +1|-1
-
-  const dxp = Math.abs(localPoint.x - (+EDGE));
-  const dxn = Math.abs(localPoint.x - (-EDGE));
-  const dyp = Math.abs(localPoint.y - (+EDGE));
-  const dyn = Math.abs(localPoint.y - (-EDGE));
-  const dzp = Math.abs(localPoint.z - (+EDGE));
-  const dzn = Math.abs(localPoint.z - (-EDGE));
-
-  switch (touchFaceId) {
-    case 1: // +X (plane YZ)
-    case 2: // -X
-      push('Y', +1, dyp); push('Y', -1, dyn);
-      push('Z', +1, dzp); push('Z', -1, dzn);
-      break;
-    case 3: // +Y (plane XZ)
-    case 4: // -Y
-      push('X', +1, dxp); push('X', -1, dxn);
-      push('Z', +1, dzp); push('Z', -1, dzn);
-      break;
-    case 5: // +Z (plane XY)
-    case 6: // -Z
-      push('X', +1, dxp); push('X', -1, dxn);
-      push('Y', +1, dyp); push('Y', -1, dyn);
-      break;
-  }
-
-  // Pick the closest border among the four candidates
-  cand.sort((a,b)=>a.dist-b.dist);
-  return cand[0]; // {adjAxis:'X'|'Y'|'Z', sign:+1|-1}
-}
-
-// Build world unit vectors for the cube's +X/+Y/+Z axes
-function cubeWorldAxes() {
-  return {
-    ex: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 0).normalize(),
-    ey: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 1).normalize(),
-    ez: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 2).normalize(),
-  };
-}
-
-// Toggle this if the swipe → CW/CCW feeling is globally inverted
-const CW_IF_POSITIVE_ALONG_EDGE = true;
-
-// ---- Swipe state (locked at pointerdown) ----
+// Swipe state with cubie tracking
 let swipeState = null;
 
 // Pinch helpers
@@ -237,7 +204,7 @@ function updatePinchState() {
     const d = screenDistance(points[0], points[1]);
     if (!pinchActive) { pinchActive = true; pinchStartDistance = d; }
     else if (pinchStartDistance > 0) {
-      const adjusted = d / pinchStartDistance; // >1 means spreading fingers
+      const adjusted = d / pinchStartDistance;
       dollyByScale(1 / adjusted);
       pinchStartDistance = d;
     }
@@ -248,56 +215,31 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (activePointers.size >= 2) { updatePinchState(); return; }
 
-  // Ignore globe area
+  // ignore globe area
   const g = globeRect();
   if (e.clientX >= g.left && e.clientX <= g.right && e.clientY >= g.top && e.clientY <= g.bottom) return;
 
-  // Raycast once
-  setPointerFromEvent(e);
-  raycaster.setFromCamera(pointer, camera);
-  const hit = raycaster.intersectObjects(group.children, true)[0];
+  const hit = rayHit(e);
   if (!hit) return;
 
-  // Touched face world normal
+  // Touched face normal + id
   const Ns = hit.face?.normal.clone().transformDirection(hit.object.matrixWorld).normalize() || new THREE.Vector3(0,0,1);
   const touchedFaceId = faceIdFromNormal(Ns);
 
-  // Convert hit point into cube local space
-  const localHit = group.worldToLocal(hit.point.clone());
-
-  // Pick the nearest border on that face → determines adjacent face normal Nt
-  const border = nearestEdgeOnFace(touchedFaceId, localHit); // {adjAxis, sign}
-  const { ex, ey, ez } = cubeWorldAxes();
-
-  let Nt;
-  if (border.adjAxis === 'X') Nt = (border.sign > 0 ? ex : ex.clone().multiplyScalar(-1));
-  if (border.adjAxis === 'Y') Nt = (border.sign > 0 ? ey : ey.clone().multiplyScalar(-1));
-  if (border.adjAxis === 'Z') Nt = (border.sign > 0 ? ez : ez.clone().multiplyScalar(-1));
-
-  // Direction of the shared edge line (consistent orientation)
-  // edgeDir lies in both planes; using Nt × Ns keeps a consistent right-hand order.
-  const edgeDir = new THREE.Vector3().crossVectors(Nt, Ns).normalize();
-
-  // Build a stable tangent basis for the touched plane (for accumulation)
-  // Use cube-local axes to make it orientation invariant
-  // Choose a u axis in the plane most aligned with edgeDir to improve SNR
-  const candidates = [ex, ey, ez].filter(v => Math.abs(v.dot(Ns)) < 0.5); // axes roughly in plane
-  let u = candidates[0] || ex;
-  if (candidates.length === 2) {
-    u = (candidates[0].dot(edgeDir) > candidates[1].dot(edgeDir)) ? candidates[0].clone() : candidates[1].clone();
-  } else {
-    // fallback: project ex into plane
-    u = ex.clone().sub(Ns.clone().multiplyScalar(ex.dot(Ns))).normalize();
-  }
-  const v = new THREE.Vector3().crossVectors(Ns, u).normalize();
-
   swipeState = {
-    Ns, Nt, edgeDir, touchedFaceId,
-    accAlongEdge: 0,
+    Ns, touchedFaceId,
+    cubies: new Map(), // key "x-y-z" -> {xi,yi,zi}
+    pathWorldDelta: new THREE.Vector3(), // accumulate world motion
     lastScreen: { x: e.clientX, y: e.clientY },
-    u, v,
     moved: false
   };
+
+  // record first cubie
+  const c = topCubie(hit.object);
+  if (c) {
+    const { xi, yi, zi } = c.userData;
+    swipeState.cubies.set(`${xi}-${yi}-${zi}`, { xi, yi, zi });
+  }
 });
 
 renderer.domElement.addEventListener('pointermove', (e) => {
@@ -308,20 +250,30 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   const dx = e.clientX - swipeState.lastScreen.x;
   const dy = e.clientY - swipeState.lastScreen.y;
   swipeState.lastScreen = { x: e.clientX, y: e.clientY };
-  if (dx === 0 && dy === 0) return;
 
-  // Convert screen delta to world delta using camera right/up
+  // Accumulate world delta from screen delta
   const camRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
   const camUp    = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
   const k = 0.01; // sensitivity
-  let worldDelta = camRight.multiplyScalar(dx * k).add(camUp.multiplyScalar(-dy * k));
-
-  // Project onto the touched face plane
-  worldDelta = worldDelta.sub(swipeState.Ns.clone().multiplyScalar(worldDelta.dot(swipeState.Ns)));
-
-  // Accumulate **along the edge line**
-  swipeState.accAlongEdge += worldDelta.dot(swipeState.edgeDir);
+  const worldDelta = camRight.multiplyScalar(dx * k).add(camUp.multiplyScalar(-dy * k));
+  swipeState.pathWorldDelta.add(worldDelta);
   swipeState.moved = true;
+
+  // Also collect which cubies were traversed
+  const hit = rayHit(e);
+  if (hit) {
+    // Only accept hits on the SAME face we started on (same world normal sign)
+    const nNow = hit.face?.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    if (nNow && Math.sign(nNow.x) === Math.sign(swipeState.Ns.x)
+            && Math.sign(nNow.y) === Math.sign(swipeState.Ns.y)
+            && Math.sign(nNow.z) === Math.sign(swipeState.Ns.z)) {
+      const c = topCubie(hit.object);
+      if (c) {
+        const { xi, yi, zi } = c.userData;
+        swipeState.cubies.set(`${xi}-${yi}-${zi}`, { xi, yi, zi });
+      }
+    }
+  }
 });
 
 renderer.domElement.addEventListener('pointerup', async (e) => {
@@ -330,22 +282,101 @@ renderer.domElement.addEventListener('pointerup', async (e) => {
   if (pinchActive) return;
   if (!swipeState || !swipeState.moved) { swipeState = null; return; }
 
-  const { Nt, accAlongEdge } = swipeState;
+  const { Ns, touchedFaceId, cubies, pathWorldDelta } = swipeState;
   swipeState = null;
 
-  const MAG_MIN = 0.10; // world units threshold
-  if (Math.abs(accAlongEdge) < MAG_MIN) return;
+  // Must touch at least 3 unique cubies
+  const touched = Array.from(cubies.values());
+  if (touched.length < 3) return;
 
-  // Determine target faceId from Nt
-  const faceId = faceIdFromNormal(Nt);
+  // Check they lie on ONE face strip at the EDGE (index 0 or 2), and are aligned along one axis with all three indices present.
+  // For each touchedFaceId, two indices vary across the plane; one index is fixed to the face's EDGE.
+  function isEdgeStripAndWhich(tface, list) {
+    // returns { ok, fixedAxis:'X'|'Y'|'Z', fixedIndex:0|2, varying:'X'|'Y'|'Z' }
+    const xs = list.map(p=>p.xi), ys = list.map(p=>p.yi), zs = list.map(p=>p.zi);
+    const uniq = arr => Array.from(new Set(arr));
+    const ux = uniq(xs), uy = uniq(ys), uz = uniq(zs);
 
-  // Map sign of swipe along edge to CW/CCW (globally toggle-able)
-  const positive = accAlongEdge >= 0;
-  const dir = (positive
+    // Helper to verify that along the varying axis we covered 3 indices (0,1,2) in any order
+    const covered012 = arr => {
+      const s = new Set(arr);
+      return s.has(0) && s.has(1) && s.has(2);
+    };
+
+    switch (tface) {
+      case 1: // +X face -> xi must be 2; vary yi or zi fully
+        if (ux.length === 1 && ux[0] === 2) {
+          if (covered012(ys) && new Set(zs).size === 1) return { ok:true, fixedAxis:'X', fixedIndex:2, varying:'Y' };
+          if (covered012(zs) && new Set(ys).size === 1) return { ok:true, fixedAxis:'X', fixedIndex:2, varying:'Z' };
+        }
+        return { ok:false };
+      case 2: // -X face -> xi must be 0
+        if (ux.length === 1 && ux[0] === 0) {
+          if (covered012(ys) && new Set(zs).size === 1) return { ok:true, fixedAxis:'X', fixedIndex:0, varying:'Y' };
+          if (covered012(zs) && new Set(ys).size === 1) return { ok:true, fixedAxis:'X', fixedIndex:0, varying:'Z' };
+        }
+        return { ok:false };
+      case 3: // +Y face -> yi must be 2
+        if (uy.length === 1 && uy[0] === 2) {
+          if (covered012(xs) && new Set(zs).size === 1) return { ok:true, fixedAxis:'Y', fixedIndex:2, varying:'X' };
+          if (covered012(zs) && new Set(xs).size === 1) return { ok:true, fixedAxis:'Y', fixedIndex:2, varying:'Z' };
+        }
+        return { ok:false };
+      case 4: // -Y face -> yi must be 0
+        if (uy.length === 1 && uy[0] === 0) {
+          if (covered012(xs) && new Set(zs).size === 1) return { ok:true, fixedAxis:'Y', fixedIndex:0, varying:'X' };
+          if (covered012(zs) && new Set(xs).size === 1) return { ok:true, fixedAxis:'Y', fixedIndex:0, varying:'Z' };
+        }
+        return { ok:false };
+      case 5: // +Z face -> zi must be 2
+        if (uz.length === 1 && uz[0] === 2) {
+          if (covered012(xs) && new Set(ys).size === 1) return { ok:true, fixedAxis:'Z', fixedIndex:2, varying:'X' };
+          if (covered012(ys) && new Set(xs).size === 1) return { ok:true, fixedAxis:'Z', fixedIndex:2, varying:'Y' };
+        }
+        return { ok:false };
+      case 6: // -Z face -> zi must be 0
+        if (uz.length === 1 && uz[0] === 0) {
+          if (covered012(xs) && new Set(ys).size === 1) return { ok:true, fixedAxis:'Z', fixedIndex:0, varying:'X' };
+          if (covered012(ys) && new Set(xs).size === 1) return { ok:true, fixedAxis:'Z', fixedIndex:0, varying:'Y' };
+        }
+        return { ok:false };
+    }
+    return { ok:false };
+  }
+
+  const strip = isEdgeStripAndWhich(touchedFaceId, touched);
+  if (!strip.ok) return; // not a valid 3-cubie edge strip; ignore
+
+  // Determine adjacent face (Nt) from which EDGE we’re on:
+  // If we are on +Z face and fixedAxis is Y with fixedIndex 2 => adjacent is +Y
+  // If fixedIndex 0 => adjacent is -Axis
+  function adjacentFaceFromEdge(tface, fixedAxis, fixedIndex) {
+    const pos = fixedIndex === 2; // true => +axis, false => -axis
+    // Adjacent face is the ± fixedAxis
+    switch (fixedAxis) {
+      case 'X': return pos ? 1 : 2;
+      case 'Y': return pos ? 3 : 4;
+      case 'Z': return pos ? 5 : 6;
+    }
+    return null;
+  }
+
+  const targetFaceId = adjacentFaceFromEdge(touchedFaceId, strip.fixedAxis, strip.fixedIndex);
+  if (!targetFaceId) return;
+
+  // Compute edge direction: edgeDir = Nt × Ns
+  const Nt = faceNormalFromId(targetFaceId).normalize();
+  const edgeDir = new THREE.Vector3().crossVectors(Nt, Ns).normalize();
+
+  // Project net motion onto edgeDir to decide CW/CCW
+  const along = pathWorldDelta.dot(edgeDir);
+  if (Math.abs(along) < 0.05) return; // too small
+
+  const dir = (along >= 0)
     ? (CW_IF_POSITIVE_ALONG_EDGE ? 'CW' : 'CCW')
-    : (CW_IF_POSITIVE_ALONG_EDGE ? 'CCW' : 'CW'));
+    : (CW_IF_POSITIVE_ALONG_EDGE ? 'CCW' : 'CW');
 
-  await api.rotateFace(faceId, dir, true);
+  await api.rotateFace(targetFaceId, dir, true);
 }, { passive: false });
 
 renderer.domElement.addEventListener('pointercancel', (e) => {
@@ -354,7 +385,11 @@ renderer.domElement.addEventListener('pointercancel', (e) => {
   swipeState = null;
 });
 
-// Optional: mouse wheel zoom for desktop
+// Pinch-to-zoom (same as before)
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  // already handled above; here only to track active pointers
+  if (!activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+});
 renderer.domElement.addEventListener('wheel', (e) => {
   e.preventDefault();
   const delta = Math.sign(e.deltaY);
@@ -380,6 +415,6 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     const params = new URLSearchParams(location.search);
     if (params.get('dev') === '1') return;
-    navigator.serviceWorker.register('./sw.js?v=9').catch(() => {});
+    navigator.serviceWorker.register('./sw.js?v=10').catch(() => {});
   });
 }
