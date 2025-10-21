@@ -1,4 +1,4 @@
-import { createRubiksCube } from './cube.js';
+import { createRubiksCube } from './cube.js?v=7';
 
 const sceneEl = document.getElementById('scene');
 const globeEl = document.getElementById('globe');
@@ -7,29 +7,24 @@ const solveBtn = document.getElementById('solveBtn');
 const shuffleCount = document.getElementById('shuffleCount');
 
 // ---------- DEV: cache-busting switch ----------
-// Visit your page with ?dev=1 once to fully bypass SW + clear caches during testing.
-// Example: https://<user>.github.io/<repo>/?dev=1
 (async function devBypass() {
   const params = new URLSearchParams(location.search);
   if (params.get('dev') === '1') {
     try {
-      // Unregister all service workers
       if ('serviceWorker' in navigator) {
         const regs = await navigator.serviceWorker.getRegistrations();
         for (const r of regs) await r.unregister();
       }
-      // Clear all caches
       if (window.caches && caches.keys) {
         const keys = await caches.keys();
         await Promise.all(keys.map(k => caches.delete(k)));
       }
-      // Remove ?dev=1 and reload once
       if (!sessionStorage.getItem('devReloaded')) {
         sessionStorage.setItem('devReloaded', '1');
         const url = new URL(location.href);
         url.searchParams.delete('dev');
         location.replace(url.toString());
-        return; // stop running rest of app.js on this pass
+        return;
       } else {
         sessionStorage.removeItem('devReloaded');
       }
@@ -237,9 +232,8 @@ renderer.domElement.addEventListener('wheel', (e) => {
 // === PWA service worker ===
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    // Only register SW if not in dev-bypass mode
     const params = new URLSearchParams(location.search);
     if (params.get('dev') === '1') return;
-    navigator.serviceWorker.register('./sw.js?v=6').catch(() => {});
+    navigator.serviceWorker.register('./sw.js?v=7').catch(() => {});
   });
 }
