@@ -1,4 +1,4 @@
-import { createRubiksCube } from './cube.js?v=8';
+import { createRubiksCube } from './cube.js?v=9';
 
 const sceneEl = document.getElementById('scene');
 const globeEl = document.getElementById('globe');
@@ -110,7 +110,7 @@ globeEl.addEventListener('pointermove', (e) => { if (!globeDragging) return; e.p
 globeEl.addEventListener('pointerup', () => onGlobeEnd());
 globeEl.addEventListener('pointercancel', () => onGlobeEnd());
 
-// ========== Deterministic turn swipe & pinch on canvas ==========
+// ========== Adjacent-edge swipe logic (camera/cube invariant) ==========
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 
@@ -118,7 +118,7 @@ const activePointers = new Map(); // id -> {x,y}
 let pinchActive = false;
 let pinchStartDistance = 0;
 
-// Derive STEP and EDGE from the cube (so we can compute xi/yi/zi robustly)
+// Derive STEP and EDGE from the cube (so we can compute indices robustly)
 let STEP = 0, EDGE = 0;
 (function computeStepEdge() {
   const xs = new Set(), ys = new Set(), zs = new Set();
@@ -131,11 +131,10 @@ let STEP = 0, EDGE = 0;
   const ax = toArr(xs), ay = toArr(ys), az = toArr(zs);
   const diffs = (arr) => arr.slice(1).map((v,i)=>Math.abs(v-arr[i])).filter(Boolean);
   const allDiffs = [...diffs(ax), ...diffs(ay), ...diffs(az)].filter(d=>d>0.001);
-  STEP = Math.min(...allDiffs); // nearest neighbor spacing
+  STEP = Math.min(...allDiffs);
   EDGE = Math.max(Math.max(...ax.map(Math.abs)), Math.max(...ay.map(Math.abs)), Math.max(...az.map(Math.abs)));
 })();
 
-// Helpers
 function setPointerFromEvent(e) {
   const rect = renderer.domElement.getBoundingClientRect();
   const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -148,20 +147,86 @@ function worldRaycastHit(e) {
   const hits = raycaster.intersectObjects(group.children, true);
   return hits.length ? hits[0] : null;
 }
+
+// Map world normal to faceId 1..6 consistently
 function faceIdFromNormal(n) {
   const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
   if (ax >= ay && ax >= az) return n.x >= 0 ? 1 : 2;
   if (ay >= ax && ay >= az) return n.y >= 0 ? 3 : 4;
   return n.z >= 0 ? 5 : 6;
 }
-function idxFromCoord(coord) {
-  // convert local coord to index 0,1,2 using STEP
-  if (coord >  0.5*STEP) return 2;
-  if (coord < -0.5*STEP) return 0;
-  return 1;
+// Map faceId back to world unit normal using cube's world axes (in case needed)
+function faceNormalFromId(fid) {
+  // cube local axes in world:
+  const ex = new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 0).normalize(); // +X
+  const ey = new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 1).normalize(); // +Y
+  const ez = new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 2).normalize(); // +Z
+  switch (fid) {
+    case 1: return ex.clone();
+    case 2: return ex.clone().multiplyScalar(-1);
+    case 3: return ey.clone();
+    case 4: return ey.clone().multiplyScalar(-1);
+    case 5: return ez.clone();
+    case 6: return ez.clone().multiplyScalar(-1);
+  }
+  return new THREE.Vector3(0,0,1);
 }
 
-// ---- SwipeState with locked plane and accumulators ----
+// Helpers to pick the nearest border (edge) on the touched face
+function nearestEdgeOnFace(touchFaceId, localPoint) {
+  // Determine which two local axes lie in the touched face
+  // and which coordinate hits which border (±EDGE).
+  // For touched face:
+  // ±X face => plane axes: Y,Z; borders at y=±EDGE or z=±EDGE
+  // ±Y face => plane axes: X,Z; borders at x=±EDGE or z=±EDGE
+  // ±Z face => plane axes: X,Y; borders at x=±EDGE or y=±EDGE
+
+  const cand = [];
+  const push = (adjAxis, sign, dist) => cand.push({ adjAxis, sign, dist }); // adjAxis: 'X'|'Y'|'Z', sign: +1|-1
+
+  const dxp = Math.abs(localPoint.x - (+EDGE));
+  const dxn = Math.abs(localPoint.x - (-EDGE));
+  const dyp = Math.abs(localPoint.y - (+EDGE));
+  const dyn = Math.abs(localPoint.y - (-EDGE));
+  const dzp = Math.abs(localPoint.z - (+EDGE));
+  const dzn = Math.abs(localPoint.z - (-EDGE));
+
+  switch (touchFaceId) {
+    case 1: // +X (plane YZ)
+    case 2: // -X
+      push('Y', +1, dyp); push('Y', -1, dyn);
+      push('Z', +1, dzp); push('Z', -1, dzn);
+      break;
+    case 3: // +Y (plane XZ)
+    case 4: // -Y
+      push('X', +1, dxp); push('X', -1, dxn);
+      push('Z', +1, dzp); push('Z', -1, dzn);
+      break;
+    case 5: // +Z (plane XY)
+    case 6: // -Z
+      push('X', +1, dxp); push('X', -1, dxn);
+      push('Y', +1, dyp); push('Y', -1, dyn);
+      break;
+  }
+
+  // Pick the closest border among the four candidates
+  cand.sort((a,b)=>a.dist-b.dist);
+  return cand[0]; // {adjAxis:'X'|'Y'|'Z', sign:+1|-1}
+}
+
+// Build world unit vectors for the cube's +X/+Y/+Z axes
+function cubeWorldAxes() {
+  return {
+    ex: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 0).normalize(),
+    ey: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 1).normalize(),
+    ez: new THREE.Vector3().setFromMatrixColumn(group.matrixWorld, 2).normalize(),
+  };
+}
+
+// Toggle this if the swipe → CW/CCW feeling is globally inverted
+const CW_IF_POSITIVE_ALONG_EDGE = true;
+
+// ---- Swipe state (locked at pointerdown) ----
 let swipeState = null;
 
 // Pinch helpers
@@ -172,75 +237,11 @@ function updatePinchState() {
     const d = screenDistance(points[0], points[1]);
     if (!pinchActive) { pinchActive = true; pinchStartDistance = d; }
     else if (pinchStartDistance > 0) {
-      const adjusted = d / pinchStartDistance;           // >1 fingers apart
-      dollyByScale(1 / adjusted);                        // spread => zoom out
+      const adjusted = d / pinchStartDistance; // >1 means spreading fingers
+      dollyByScale(1 / adjusted);
       pinchStartDistance = d;
     }
   } else { pinchActive = false; pinchStartDistance = 0; }
-}
-
-// MAPPING TABLE: tune this to decide which face/direction turns
-// Inputs: (touchedFaceId 1..6, xi, yi, zi in {0,1,2}, dominant 'U'|'V', sign -1|+1)
-// Return: { faceId: 1..6, dir: 'CW'|'CCW' } or null to ignore
-function mapSwipeToTurn(touchedFaceId, xi, yi, zi, dominant, sign) {
-  const CW='CW', CCW='CCW';
-  const dirBySign = (s, cwIfPos=true) => (s >= 0 ? (cwIfPos?CW:CCW) : (cwIfPos?CCW:CW));
-
-  // ✅ START HERE to tune: change faceId and cwIfPos booleans
-  switch (touchedFaceId) {
-    case 5: // Front (+Z)
-      // U = "horizontal-ish" movement across the front plane, V = "vertical-ish"
-      if (dominant === 'U') {
-        // Example: swiping along U rotates the Up face (3)
-        return { faceId: 3, dir: dirBySign(sign, /*cwIfPos*/ true) };
-      } else {
-        // Swiping along V rotates the Right face (1)
-        return { faceId: 1, dir: dirBySign(sign, /*cwIfPos*/ true) };
-      }
-
-    case 6: // Back (-Z)
-      if (dominant === 'U') {
-        return { faceId: 4, dir: dirBySign(sign, true) }; // Down
-      } else {
-        return { faceId: 2, dir: dirBySign(sign, true) }; // Left
-      }
-
-    case 3: // Up (+Y)
-      if (dominant === 'U') {
-        return { faceId: 1, dir: dirBySign(sign, true) }; // Right
-      } else {
-        return { faceId: 5, dir: dirBySign(sign, true) }; // Front
-      }
-
-    case 4: // Down (-Y)
-      if (dominant === 'U') {
-        return { faceId: 2, dir: dirBySign(sign, true) }; // Left
-      } else {
-        return { faceId: 6, dir: dirBySign(sign, true) }; // Back
-      }
-
-    case 1: // Right (+X)
-      if (dominant === 'U') {
-        return { faceId: 3, dir: dirBySign(sign, true) }; // Up
-      } else {
-        return { faceId: 5, dir: dirBySign(sign, true) }; // Front
-      }
-
-    case 2: // Left (-X)
-      if (dominant === 'U') {
-        return { faceId: 4, dir: dirBySign(sign, true) }; // Down
-      } else {
-        return { faceId: 6, dir: dirBySign(sign, true) }; // Back
-      }
-
-    default:
-      return null;
-  }
-
-  // 🔧 OPTIONAL per-row overrides example:
-  // if (touchedFaceId === 5 && dominant === 'U' && yi === 2) {
-  //   return { faceId: 3, dir: dirBySign(sign, false) }; // flip only top row
-  // }
 }
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
@@ -251,29 +252,50 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   const g = globeRect();
   if (e.clientX >= g.left && e.clientX <= g.right && e.clientY >= g.top && e.clientY <= g.bottom) return;
 
-  const hit = worldRaycastHit(e);
+  // Raycast once
+  setPointerFromEvent(e);
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects(group.children, true)[0];
   if (!hit) return;
 
-  const n = hit.face?.normal.clone().transformDirection(hit.object.matrixWorld).normalize() || new THREE.Vector3(0,0,1);
-  const touchedFaceId = faceIdFromNormal(n);
+  // Touched face world normal
+  const Ns = hit.face?.normal.clone().transformDirection(hit.object.matrixWorld).normalize() || new THREE.Vector3(0,0,1);
+  const touchedFaceId = faceIdFromNormal(Ns);
 
-  // Build a stable tangent basis (u,v) for this face normal
-  const worldUp = new THREE.Vector3(0,1,0);
-  const alt = Math.abs(n.dot(worldUp)) > 0.9 ? new THREE.Vector3(1,0,0) : worldUp.clone();
-  const u = new THREE.Vector3().crossVectors(alt, n).normalize();   // first tangent
-  const v = new THREE.Vector3().crossVectors(n, u).normalize();     // second tangent
-
-  // Compute row/col indices by converting the hit point into cube local space
+  // Convert hit point into cube local space
   const localHit = group.worldToLocal(hit.point.clone());
-  const xi = idxFromCoord(localHit.x);
-  const yi = idxFromCoord(localHit.y);
-  const zi = idxFromCoord(localHit.z);
+
+  // Pick the nearest border on that face → determines adjacent face normal Nt
+  const border = nearestEdgeOnFace(touchedFaceId, localHit); // {adjAxis, sign}
+  const { ex, ey, ez } = cubeWorldAxes();
+
+  let Nt;
+  if (border.adjAxis === 'X') Nt = (border.sign > 0 ? ex : ex.clone().multiplyScalar(-1));
+  if (border.adjAxis === 'Y') Nt = (border.sign > 0 ? ey : ey.clone().multiplyScalar(-1));
+  if (border.adjAxis === 'Z') Nt = (border.sign > 0 ? ez : ez.clone().multiplyScalar(-1));
+
+  // Direction of the shared edge line (consistent orientation)
+  // edgeDir lies in both planes; using Nt × Ns keeps a consistent right-hand order.
+  const edgeDir = new THREE.Vector3().crossVectors(Nt, Ns).normalize();
+
+  // Build a stable tangent basis for the touched plane (for accumulation)
+  // Use cube-local axes to make it orientation invariant
+  // Choose a u axis in the plane most aligned with edgeDir to improve SNR
+  const candidates = [ex, ey, ez].filter(v => Math.abs(v.dot(Ns)) < 0.5); // axes roughly in plane
+  let u = candidates[0] || ex;
+  if (candidates.length === 2) {
+    u = (candidates[0].dot(edgeDir) > candidates[1].dot(edgeDir)) ? candidates[0].clone() : candidates[1].clone();
+  } else {
+    // fallback: project ex into plane
+    u = ex.clone().sub(Ns.clone().multiplyScalar(ex.dot(Ns))).normalize();
+  }
+  const v = new THREE.Vector3().crossVectors(Ns, u).normalize();
 
   swipeState = {
-    startNormal: n, u, v,
-    touchedFaceId, xi, yi, zi,
-    accU: 0, accV: 0,
+    Ns, Nt, edgeDir, touchedFaceId,
+    accAlongEdge: 0,
     lastScreen: { x: e.clientX, y: e.clientY },
+    u, v,
     moved: false
   };
 });
@@ -291,16 +313,14 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   // Convert screen delta to world delta using camera right/up
   const camRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
   const camUp    = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
-  const k = 0.01; // sensitivity (tune to taste)
+  const k = 0.01; // sensitivity
   let worldDelta = camRight.multiplyScalar(dx * k).add(camUp.multiplyScalar(-dy * k));
 
-  // Project onto the locked face plane
-  const n = swipeState.startNormal;
-  worldDelta = worldDelta.sub(n.clone().multiplyScalar(worldDelta.dot(n)));
+  // Project onto the touched face plane
+  worldDelta = worldDelta.sub(swipeState.Ns.clone().multiplyScalar(worldDelta.dot(swipeState.Ns)));
 
-  // Accumulate along the locked u,v basis
-  swipeState.accU += worldDelta.dot(swipeState.u);
-  swipeState.accV += worldDelta.dot(swipeState.v);
+  // Accumulate **along the edge line**
+  swipeState.accAlongEdge += worldDelta.dot(swipeState.edgeDir);
   swipeState.moved = true;
 });
 
@@ -310,19 +330,22 @@ renderer.domElement.addEventListener('pointerup', async (e) => {
   if (pinchActive) return;
   if (!swipeState || !swipeState.moved) { swipeState = null; return; }
 
-  const { accU, accV, touchedFaceId, xi, yi, zi } = swipeState;
+  const { Nt, accAlongEdge } = swipeState;
   swipeState = null;
 
-  const mag = Math.hypot(accU, accV);
-  if (mag < 0.12) return; // minimum swipe distance in world units
+  const MAG_MIN = 0.10; // world units threshold
+  if (Math.abs(accAlongEdge) < MAG_MIN) return;
 
-  const dominant = Math.abs(accU) >= Math.abs(accV) ? 'U' : 'V';
-  const sign = dominant === 'U' ? Math.sign(accU) : Math.sign(accV);
+  // Determine target faceId from Nt
+  const faceId = faceIdFromNormal(Nt);
 
-  const mapping = mapSwipeToTurn(touchedFaceId, xi, yi, zi, dominant, sign);
-  if (!mapping) return;
+  // Map sign of swipe along edge to CW/CCW (globally toggle-able)
+  const positive = accAlongEdge >= 0;
+  const dir = (positive
+    ? (CW_IF_POSITIVE_ALONG_EDGE ? 'CW' : 'CCW')
+    : (CW_IF_POSITIVE_ALONG_EDGE ? 'CCW' : 'CW'));
 
-  await api.rotateFace(mapping.faceId, mapping.dir, true);
+  await api.rotateFace(faceId, dir, true);
 }, { passive: false });
 
 renderer.domElement.addEventListener('pointercancel', (e) => {
@@ -357,6 +380,6 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     const params = new URLSearchParams(location.search);
     if (params.get('dev') === '1') return;
-    navigator.serviceWorker.register('./sw.js?v=8').catch(() => {});
+    navigator.serviceWorker.register('./sw.js?v=9').catch(() => {});
   });
 }
